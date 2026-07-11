@@ -13,13 +13,30 @@ import os
 st.set_page_config(page_title='Compressor Curve Regression', layout='wide')
 st.title('Compressor Curve Regression Tool')
 
+# ---------------------------------------------------------------------------
+# Sidebar UI Configuration Controls
+# ---------------------------------------------------------------------------
+st.sidebar.header("Regression Settings")
 method = st.sidebar.selectbox('Regression Method',
     ['Auto Best Fit','Linear','Quadratic','Cubic','4th Order','5th Order','Spline'])
-points = st.sidebar.slider('Generated Points',15,50,15)
+points = st.sidebar.slider('Generated Points', 15, 50, 15)
+
+st.sidebar.markdown("---")
+st.sidebar.header("Target Units Configuration")
+
+# Dropdown overrides for Curve and Operating Parameters
+target_flow = st.sidebar.selectbox('Target Volumetric Flow Unit', ['m3/hr', 'cfm', 'm3/min'], index=0)
+target_head = st.sidebar.selectbox('Target Head Unit', ['m', 'ft', 'kj/kg'], index=0)
+target_power = st.sidebar.selectbox('Target Power Unit', ['kW', 'hp', 'btu/hr'], index=0)
+target_eff = st.sidebar.selectbox('Target Efficiency Unit', ['%', 'fraction'], index=0)
+target_temp = st.sidebar.selectbox('Target Temperature Unit', ['deg C', 'deg F', 'K'], index=0)
+target_press = st.sidebar.selectbox('Target Pressure Unit', ['kg/cm2a', 'bara', 'psia', 'barg', 'psig'], index=0)
+target_diameter = st.sidebar.selectbox('Target Diameter Unit', ['m', 'mm', 'inch'], index=0)
+
 file = st.file_uploader('Upload Workbook', type=['xlsx'])
 
 # ---------------------------------------------------------------------------
-# Physical constants and unit conversions
+# Physical constants and base unit conversions
 # ---------------------------------------------------------------------------
 R_UNIVERSAL = 8314.462618   # J/(kmol.K)
 G = 9.80665                 # m/s^2
@@ -30,24 +47,19 @@ def normalize_unit(u):
     s = s.replace('³', '3').replace('²', '2')
     s = s.replace('^3', '3').replace('^2', '2')
     s = s.replace(' ', '').replace('.', '').replace('-', '').replace('_', '')
-    s = s.replace('cu', '')  # 'cuft' -> 'ft'
+    s = s.replace('cu', '')
     return s
 
-
-# All target units: Flow -> m3/hr, Head -> m, Power -> kW, Efficiency -> %, Diameter -> m
+# Conversion maps referenced to baseline absolute SI/Metric values
 FLOW_TO_M3HR = {
-    # imperial/US volumetric (actual, not standard-condition)
     'cfm': 1.699010796, 'acfm': 1.699010796, 'icfm': 1.699010796,
     'ft3/min': 1.699010796, 'ft3min': 1.699010796, 'ft/min': 1.699010796, 'cf/min': 1.699010796,
     'cfh': 0.028316847, 'ft3/hr': 0.028316847, 'ft3/h': 0.028316847, 'ft3hr': 0.028316847,
     'ft/hr': 0.028316847, 'cf/hr': 0.028316847,
     'cfs': 101.9406, 'ft3/s': 101.9406, 'ft3s': 101.9406, 'ft/s': 101.9406, 'cf/s': 101.9406,
-    # metric volumetric
     'm3/hr': 1.0, 'm3/h': 1.0, 'm3hr': 1.0, 'm3h': 1.0,
-    'm3/min': 60.0, 'm3min': 60.0,
-    'm3/s': 3600.0, 'm3s': 3600.0,
+    'm3/min': 60.0, 'm3min': 60.0, 'm3/s': 3600.0, 'm3s': 3600.0,
     'l/min': 0.06, 'lpm': 0.06, 'l/s': 3.6, 'lps': 3.6, 'l/hr': 0.001, 'lph': 0.001,
-    # liquid-specific
     'gpm': 0.227124707, 'usgpm': 0.227124707, 'galmin': 0.227124707,
     'igpm': 0.272765, 'ukgpm': 0.272765, 'impgpm': 0.272765,
     'gph': 0.003785412, 'usgph': 0.003785412,
@@ -88,72 +100,89 @@ LENGTH_TO_M = {
     'ft': 0.3048, 'feet': 0.3048, 'foot': 0.3048, "'": 0.3048
 }
 
-
-def convert_temperature_to_c(val, unit_str):
-    """Convert any temperature unit variant to Celsius."""
-    u = normalize_unit(unit_str)
-    if u in ['c', 'degc', 'celsius', 'centigrade']:
-        return val, True
-    if u in ['f', 'degf', 'fahrenheit']:
-        return (val - 32) * 5.0 / 9.0, True
-    if u in ['k', 'kelvin']:
-        return val - 273.15, True
-    if u in ['r', 'rankine']:
-        return (val - 491.67) * 5.0 / 9.0, True
+# ---------------------------------------------------------------------------
+# Dynamic UOM Conversion Core Routing Logic
+# ---------------------------------------------------------------------------
+def convert_to_si_base(val, incoming_unit, mapping_table):
+    """Helper to convert an input value back to the SI/Metric reference line."""
+    key = normalize_unit(incoming_unit)
+    if key in mapping_table:
+        return val * mapping_table[key], True
     return val, False
 
+def convert_from_si_base(val, desired_target, mapping_table):
+    """Helper to convert from an SI/Metric reference line to any selected output format."""
+    key = normalize_unit(desired_target)
+    if key in mapping_table:
+        return val / mapping_table[key]
+    return val
 
-def convert_pressure_to_kgcm2a(val, unit_str):
-    """Convert absolute or gauge pressure variants to kg/cm²a (Absolute)."""
-    u = normalize_unit(unit_str)
+def route_temperature(val, from_unit, to_unit):
+    """Transforms temperature calculations across any combination of inputs/outputs."""
+    u_from = normalize_unit(from_unit)
+    u_to = normalize_unit(to_unit)
     
-    # 1. Convert everything to Absolute Bar first
-    if u in ['bar', 'bara']:
-        bara = val
-    elif u in ['barg']:
-        bara = val + 1.01325
-    elif u in ['psi', 'psia', 'lbf/in2']:
-        bara = val * 0.0689476
-    elif u in ['psig']:
-        bara = (val + 14.6959) * 0.0689476
-    elif u in ['kg/cm2', 'kg/cm2a', 'kgcm2', 'kgcm2a', 'ata']:
-        bara = val * 0.980665
-    elif u in ['kg/cm2g', 'kgcm2g', 'atg']:
-        bara = (val + 1.03323) * 0.980665
-    elif u in ['kpa', 'kpaa']:
-        bara = val / 100.0
-    elif u in ['kpag']:
-        bara = (val + 101.325) / 100.0
-    elif u in ['mpa', 'mpaa']:
-        bara = val * 10.0
-    elif u in ['mpag']:
-        bara = (val * 10.0) + 1.01325
-    elif u in ['atm']:
-        bara = val * 1.01325
-    elif u in ['torr', 'mmhg']:
-        bara = val / 750.062
-    else:
-        return val, False
-        
-    # 2. Convert Absolute Bar to kg/cm²a
-    return bara / 0.980665, True
+    # Base normalization step: convert input to Celsius
+    if u_from in ['c', 'degc', 'celsius']: c = val
+    elif u_from in ['f', 'degf', 'fahrenheit']: c = (val - 32) * 5.0 / 9.0
+    elif u_from in ['k', 'kelvin']: c = val - 273.15
+    elif u_from in ['r', 'rankine']: c = (val - 491.67) * 5.0 / 9.0
+    else: return val, False # Unrecognized incoming unit
 
+    # Conversion step: convert Celsius to requested layout
+    if u_to in ['c', 'degc', 'celsius']: return c, True
+    if u_to in ['f', 'degf', 'fahrenheit']: return (c * 9.0 / 5.0) + 32, True
+    if u_to in ['k', 'kelvin']: return c + 273.15, True
+    if u_to in ['r', 'rankine']: return (c * 9.0 / 5.0) + 491.67, True
+    return c, True
 
-def gas_density_kg_m3(pressure_kgcm2a, temperature_c, mw, z):
-    """Inlet gas density via real-gas law using standardized metric units."""
-    p_pa = pressure_kgcm2a * 98066.5 # 1 kg/cm² = 98066.5 Pa
-    t_k = temperature_c + 273.15
+def route_pressure(val, from_unit, to_unit):
+    """Transforms absolute and gauge pressure properties dynamically."""
+    u_from = normalize_unit(from_unit)
+    u_to = normalize_unit(to_unit)
+    
+    # Base step: convert any incoming variance to absolute bara
+    if u_from in ['bar', 'bara']: bara = val
+    elif u_from in ['barg']: bara = val + 1.01325
+    elif u_from in ['psi', 'psia', 'lbf/in2']: bara = val * 0.0689476
+    elif u_from in ['psig']: bara = (val + 14.6959) * 0.0689476
+    elif u_from in ['kg/cm2', 'kg/cm2a', 'kgcm2', 'kgcm2a', 'ata']: bara = val * 0.980665
+    elif u_from in ['kg/cm2g', 'kgcm2g', 'atg']: bara = (val + 1.03323) * 0.980665
+    elif u_from in ['kpa', 'kpaa']: bara = val / 100.0
+    elif u_from in ['kpag']: bara = (val + 101.325) / 100.0
+    elif u_from in ['mpa', 'mpaa']: bara = val * 10.0
+    elif u_from in ['mpag']: bara = (val * 10.0) + 1.01325
+    elif u_from in ['atm']: bara = val * 1.01325
+    elif u_from in ['torr', 'mmhg']: bara = val / 750.062
+    else: return val, False
+
+    # Conversion step: transform absolute bara to requested target unit
+    if u_to in ['bar', 'bara']: return bara, True
+    if u_to in ['barg']: return bara - 1.01325, True
+    if u_to in ['psi', 'psia', 'lbf/in2']: return bara / 0.0689476, True
+    if u_to in ['psig']: return (bara / 0.0689476) - 14.6959, True
+    if u_to in ['kg/cm2', 'kg/cm2a', 'kgcm2', 'kgcm2a', 'ata']: return bara / 0.980665, True
+    if u_to in ['kg/cm2g', 'kgcm2g', 'atg']: return (bara / 0.980665) - 1.03323, True
+    if u_to in ['kpa', 'kpaa']: return bara * 100.0, True
+    if u_to in ['kpag']: return (bara * 100.0) - 101.325, True
+    if u_to in ['mpa', 'mpaa']: return bara / 10.0, True
+    if u_to in ['mpag']: return (bara - 1.01325) / 10.0, True
+    if u_to in ['atm']: return bara / 1.01325, True
+    if u_to in ['torr', 'mmhg']: return bara * 750.062, True
+    return bara, True
+
+def gas_density_kg_m3(pressure_any, temp_any, p_unit, t_unit, mw, z):
+    """Calculates thermodynamic gas density by safely converting any UI setup to standard metric base."""
+    p_bara, _ = route_pressure(pressure_any, p_unit, 'bara')
+    t_c, _ = route_temperature(temp_any, t_unit, 'deg C')
+    
+    p_pa = p_bara * 100000.0
+    t_k = t_c + 273.15
     return (p_pa * mw) / (z * R_UNIVERSAL * t_k)
 
-
-def convert_unit(value, unit_str, table, label):
-    """Look up a conversion factor; pass through unchanged if unknown."""
-    key = normalize_unit(unit_str)
-    if key in table:
-        return value * table[key], True
-    return value, False
-
-
+# ---------------------------------------------------------------------------
+# Core UI Data Extraction Logic
+# ---------------------------------------------------------------------------
 def clean_parameter_name(name):
     n = str(name).lower()
     if 'head' in n: return 'Head'
@@ -161,9 +190,7 @@ def clean_parameter_name(name):
     if 'power' in n or 'bhp' in n or 'kw' in n: return 'Power'
     return str(name)
 
-
 def detect_triplet_blocks(raw_df):
-    """Find Speed/Flow/Value header triplets and capture the units row."""
     blocks = []
     rows, cols = raw_df.shape
     for r in range(rows):
@@ -193,9 +220,8 @@ def detect_triplet_blocks(raw_df):
             uniq.append(b)
     return uniq
 
-
 def extract_block_data(raw_df, block):
-    """Extract Curve tables and normalize curve values."""
+    """Extract and map curve block datasets straight to user-configured UI targets."""
     r = block['header_row']
     c = block['start_col']
     data = []
@@ -211,19 +237,25 @@ def extract_block_data(raw_df, block):
     if df.empty:
         return df, False, False
 
-    flow_converted = value_converted = False
-    df['Flow'], flow_converted = convert_unit(df['Flow'], block['flow_unit'], FLOW_TO_M3HR, 'flow')
+    # 1. Normalize Flow to standard m3/hr, then map to user chosen target layout
+    flow_si, flow_converted = convert_to_si_base(df['Flow'], block['flow_unit'], FLOW_TO_M3HR)
+    df['Flow'] = convert_from_si_base(flow_si, target_flow, FLOW_TO_M3HR)
 
+    # 2. Normalize and route curve values based on context
     param = block['parameter']
+    value_converted = False
+    
     if param == 'Head':
-        df['Value'], value_converted = convert_unit(df['Value'], block['value_unit'], HEAD_TO_M, 'head')
+        val_si, value_converted = convert_to_si_base(df['Value'], block['value_unit'], HEAD_TO_M)
+        df['Value'] = convert_from_si_base(val_si, target_head, HEAD_TO_M)
     elif param == 'Power':
-        df['Value'], value_converted = convert_unit(df['Value'], block['value_unit'], POWER_TO_KW, 'power')
+        val_si, value_converted = convert_to_si_base(df['Value'], block['value_unit'], POWER_TO_KW)
+        df['Value'] = convert_from_si_base(val_si, target_power, POWER_TO_KW)
     elif param == 'Efficiency':
-        df['Value'], value_converted = convert_unit(df['Value'], block['value_unit'], EFF_TO_PCT, 'efficiency')
+        val_si, value_converted = convert_to_si_base(df['Value'], block['value_unit'], EFF_TO_PCT)
+        df['Value'] = convert_from_si_base(val_si, target_eff, EFF_TO_PCT)
 
     return df, flow_converted, value_converted
-
 
 def detect_property_block(raw_df):
     rows, cols = raw_df.shape
@@ -235,7 +267,6 @@ def detect_property_block(raw_df):
             if v1 == 'parameter' and v2 == 'value' and v3 == 'units':
                 return {'header_row': r, 'start_col': c}
     return None
-
 
 def extract_property_block(raw_df, block):
     if block is None:
@@ -258,16 +289,17 @@ def extract_property_block(raw_df, block):
             val_float = float(val_float)
             p_lower = param_str.lower()
             
-            # Execute inline metric conversions for properties block
+            # Dynamically convert properties based on UI selections
             if 'temperature' in p_lower:
-                val_float, converted = convert_temperature_to_c(val_float, unit_str)
-                if converted: unit_str = 'deg C'
+                val_float, converted = route_temperature(val_float, unit_str, target_temp)
+                if converted: unit_str = target_temp
             elif 'pressure' in p_lower:
-                val_float, converted = convert_pressure_to_kgcm2a(val_float, unit_str)
-                if converted: unit_str = 'kg/cm2a'
+                val_float, converted = route_pressure(val_float, unit_str, target_press)
+                if converted: unit_str = target_press
             elif 'diameter' in p_lower:
-                val_float, converted = convert_unit(val_float, unit_str, LENGTH_TO_M, 'diameter')
-                if converted: unit_str = 'm'
+                val_si, converted = convert_to_si_base(val_float, unit_str, LENGTH_TO_M)
+                val_float = convert_from_si_base(val_si, target_diameter, LENGTH_TO_M)
+                if converted: unit_str = target_diameter
         except (ValueError, TypeError):
             pass
             
@@ -278,7 +310,9 @@ def extract_property_block(raw_df, block):
         })
     return pd.DataFrame(rows_out, columns=['Parameter', 'Value', 'Units'])
 
-
+# ---------------------------------------------------------------------------
+# Mathematical Regression Modeling Core Engines
+# ---------------------------------------------------------------------------
 def build_model(x, y, meth):
     if meth == 'Spline':
         idx = np.argsort(x)
@@ -294,12 +328,10 @@ def build_model(x, y, meth):
     r2 = r2_score(y, lr.predict(X))
     return {'type': 'poly', 'poly': poly, 'model': lr, 'xmin': x.min(), 'xmax': x.max(), 'r2': r2}
 
-
 def predict_model(obj, flow):
     if obj['type'] == 'spline':
         return obj['model'](flow)
     return obj['model'].predict(obj['poly'].transform(flow.reshape(-1, 1)))
-
 
 def auto_best(x, y):
     best = None; best_name = None; best_r2 = -1e9
@@ -312,16 +344,17 @@ def auto_best(x, y):
             pass
     return best_name, best
 
-
 def gas_properties_from_df(prop_df):
-    """Maps cleaned property data frames directly into modern standardized formats."""
+    """Safely extracts process fields dynamically from localized operating blocks."""
     lookup = {}
     for _, row in prop_df.iterrows():
         p_norm = row['Parameter'].strip().lower()
         if 'pressure' in p_norm:
-            lookup['p_kgcm2a'] = row['Value']
+            lookup['p_val'] = row['Value']
+            lookup['p_unit'] = row['Units']
         elif 'temperature' in p_norm:
-            lookup['t_c'] = row['Value']
+            lookup['t_val'] = row['Value']
+            lookup['t_unit'] = row['Units']
         elif 'weight' in p_norm or 'mw' in p_norm:
             lookup['mw'] = row['Value']
         elif 'compressibility' in p_norm or 'z' in p_norm:
@@ -329,39 +362,54 @@ def gas_properties_from_df(prop_df):
             
     try:
         return {
-            'pressure_kgcm2a': float(lookup['p_kgcm2a']),
-            'temperature_c': float(lookup['t_c']),
+            'p_val': float(lookup['p_val']),
+            'p_unit': lookup['p_unit'],
+            't_val': float(lookup['t_val']),
+            't_unit': lookup['t_unit'],
             'mw': float(lookup['mw']),
             'z': float(lookup['z']),
         }
     except (KeyError, TypeError, ValueError):
         return None
 
-
-def compute_missing_parameter(available, mass_flow_kg_s):
+def compute_missing_parameter(available, common_flow, gas_props):
+    """Calculates missing curve parameters using raw metrics before mapping back to target units."""
     have = set(available.keys())
     needed = {'Head', 'Efficiency', 'Power'} - have
-    if len(needed) != 1:
+    if len(needed) != 1 or gas_props is None:
         return None, None
     missing = needed.pop()
 
+    # 1. Convert operational inputs back to metric SI base for calculation safety
+    flow_m3hr = convert_to_si_base(common_flow, target_flow, FLOW_TO_M3HR)[0]
+    rho = gas_density_kg_m3(gas_props['p_val'], gas_props['t_val'], gas_props['p_unit'], gas_props['t_unit'], gas_props['mw'], gas_props['z'])
+    mass_flow_kg_s = flow_m3hr * rho / 3600.0
+
+    # Convert available curves parameters back to basic SI units
+    head_m = convert_to_si_base(available.get('Head', 0.0), target_head, HEAD_TO_M)[0]
+    power_kw = convert_to_si_base(available.get('Power', 0.0), target_power, POWER_TO_KW)[0]
+    eff_pct = convert_to_si_base(available.get('Efficiency', 0.0), target_eff, EFF_TO_PCT)[0]
+
+    # 2. Complete thermodynamic checks
     if missing == 'Power':
-        eff = available['Efficiency'] / 100.0
-        power_kw = mass_flow_kg_s * G * available['Head'] / eff / 1000.0
-        return 'Power', power_kw
+        eff_frac = eff_pct / 100.0
+        calc_kw = mass_flow_kg_s * G * head_m / eff_frac / 1000.0
+        return 'Power', convert_from_si_base(calc_kw, target_power, POWER_TO_KW)
 
     if missing == 'Head':
-        eff = available['Efficiency'] / 100.0
-        head_m = available['Power'] * 1000.0 * eff / (mass_flow_kg_s * G)
-        return 'Head', head_m
+        eff_frac = eff_pct / 100.0
+        calc_m = power_kw * 1000.0 * eff_frac / (mass_flow_kg_s * G)
+        return 'Head', convert_from_si_base(calc_m, target_head, HEAD_TO_M)
 
     if missing == 'Efficiency':
-        eff_pct = (mass_flow_kg_s * G * available['Head']) / (available['Power'] * 1000.0) * 100.0
-        return 'Efficiency', eff_pct
+        calc_pct = (mass_flow_kg_s * G * head_m) / (power_kw * 1000.0) * 100.0
+        return 'Efficiency', convert_from_si_base(calc_pct, target_eff, EFF_TO_PCT)
 
     return None, None
 
-
+# ---------------------------------------------------------------------------
+# Streamlit Execution Pipeline Engine
+# ---------------------------------------------------------------------------
 if file:
     xls = pd.ExcelFile(file)
     output = BytesIO()
@@ -370,7 +418,6 @@ if file:
     property_rows = []
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-
         for stage in xls.sheet_names:
             st.header(stage)
             raw = pd.read_excel(xls, sheet_name=stage, header=None)
@@ -380,13 +427,11 @@ if file:
             prop_df = extract_property_block(raw, prop_block)
             gas_props = None
             if not prop_df.empty:
-                st.subheader('Operating Conditions (Normalized)')
+                st.subheader(f'Operating Conditions (Standardized to {target_temp}, {target_press})')
                 st.dataframe(prop_df, use_container_width=True)
                 for _, row in prop_df.iterrows():
                     property_rows.append([stage, row['Parameter'], row['Value'], row['Units']])
                 gas_props = gas_properties_from_df(prop_df)
-                if gas_props is None:
-                    st.info('Could not resolve baseline Thermodynamic inputs; missing parameter bypass skipped.')
             else:
                 st.warning(f'No operating-conditions block found in {stage}')
 
@@ -403,7 +448,6 @@ if file:
 
             stage_models = {}
             stage_parameters = []
-
             tabs = st.tabs([b['parameter'] for b in blocks])
 
             for tab, block in zip(tabs, blocks):
@@ -412,19 +456,10 @@ if file:
                     df, flow_conv, val_conv = extract_block_data(raw, block)
                     stage_parameters.append(param)
 
-                    unit_note = []
-                    if not flow_conv:
-                        unit_note.append(f"flow unit '{block['flow_unit']}' not recognized, left as-is")
-                    if not val_conv:
-                        unit_note.append(f"{param} unit '{block['value_unit']}' not recognized, left as-is")
-                    if unit_note:
-                        st.caption('⚠ ' + '; '.join(unit_note))
-                    else:
-                        target_unit = {'Head': 'm', 'Power': 'kW', 'Efficiency': '%'}.get(param, '')
-                        st.caption(f"Converted to Flow: m³/hr, {param}: {target_unit}")
+                    unit_label = {'Head': target_head, 'Power': target_power, 'Efficiency': target_eff}.get(param, '')
+                    st.caption(f"Visualizing with user choices -> Flow: {target_flow} | {param}: {unit_label}")
 
                     fig = go.Figure()
-
                     if param not in stage_models:
                         stage_models[param] = {}
 
@@ -443,7 +478,6 @@ if file:
                             used = method
 
                         stage_models[param][speed] = mdl
-
                         r2_rows.append([stage, speed, param, used, round(mdl['r2'], 6)])
 
                         flow_fit = np.linspace(x.min(), x.max(), points)
@@ -477,31 +511,27 @@ if file:
                     continue
 
                 common_flow = np.linspace(common_min, common_max, points)
-                temp = {'Speed': [speed] * points, 'Flow (m3/hr)': common_flow}
+                temp = {'Speed': [speed] * points, f'Flow ({target_flow})': common_flow}
 
-                predicted = {}
+                predicted_at_speed = {}
                 for p in stage_models:
                     if speed in stage_models[p]:
                         vals = predict_model(stage_models[p][speed], common_flow)
-                        predicted[p] = vals
-                        unit_label = {'Head': 'm', 'Power': 'kW', 'Efficiency': '%'}.get(p, '')
-                        temp[f'{p} ({unit_label})'] = vals
+                        predicted_at_speed[p] = vals
+                        lbl = {'Head': target_head, 'Power': target_power, 'Efficiency': target_eff}.get(p, '')
+                        temp[f'{p} ({lbl})'] = vals
 
                 if gas_props is not None:
-                    rho = gas_density_kg_m3(gas_props['pressure_kgcm2a'], gas_props['temperature_c'],
-                                             gas_props['mw'], gas_props['z'])
-                    mass_flow_kg_s = common_flow * rho / 3600.0
-                    name, values = compute_missing_parameter(predicted, mass_flow_kg_s)
+                    name, values = compute_missing_parameter(predicted_at_speed, common_flow, gas_props)
                     if name is not None:
                         computed_param_name = name
-                        unit_label = {'Head': 'm', 'Power': 'kW', 'Efficiency': '%'}.get(name, '')
-                        temp[f'{name} ({unit_label}, calculated)'] = values
+                        lbl = {'Head': target_head, 'Power': target_power, 'Efficiency': target_eff}.get(name, '')
+                        temp[f'{name} ({lbl}, calculated)'] = values
 
                 export_rows.append(pd.DataFrame(temp))
 
             if computed_param_name:
-                st.success(f"Calculated missing parameter **{computed_param_name}** for {stage} "
-                           f"using gas density from Operating Conditions.")
+                st.success(f"Calculated missing curve parameter **{computed_param_name}** for {stage}.")
 
             if export_rows:
                 final_df = pd.concat(export_rows, ignore_index=True)
@@ -514,23 +544,19 @@ if file:
                 'Calculated Parameter': computed_param_name or ''
             })
 
-        pd.DataFrame(r2_rows, columns=['Stage', 'Speed', 'Parameter', 'Method', 'R2']).to_excel(
-            writer, sheet_name='Summary_R2', index=False)
+        pd.DataFrame(r2_rows, columns=['Stage', 'Speed', 'Parameter', 'Method', 'R2']).to_excel(writer, sheet_name='Summary_R2', index=False)
         pd.DataFrame(overview).to_excel(writer, sheet_name='Workbook_Overview', index=False)
 
         if property_rows:
-            pd.DataFrame(
-                property_rows, columns=['Stage', 'Parameter', 'Value', 'Units']
-            ).to_excel(writer, sheet_name='Operating_Conditions', index=False)
+            pd.DataFrame(property_rows, columns=['Stage', 'Parameter', 'Value', 'Units']).to_excel(writer, sheet_name='Operating_Conditions', index=False)
 
     output.seek(0)
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     input_filename = os.path.splitext(file.name)[0]
-    output_filename = f"{input_filename}_Regression_Output_{timestamp}.xlsx"
+    output_filename = f"{input_filename}_Custom_UOM_Output_{timestamp}.xlsx"
 
     st.download_button(
-        label="Download Regression Workbook",
+        label="Download Customized Workbook",
         data=output.getvalue(),
         file_name=output_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
