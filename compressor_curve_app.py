@@ -33,33 +33,22 @@ def normalize_unit(u):
     s = s.replace('cu', '')  # 'cuft' -> 'ft'
     return s
 
-
 # All target units: Flow -> m3/hr, Head -> m, Power -> kW, Efficiency -> %
-# Sources: standard engineering unit references (Crane TP-410, GPSA Engineering Data Book,
-# NIST Guide to SI). Every key below is pre-normalized (see normalize_unit) so lookups
-# don't care about spacing, case, superscripts, or hyphens.
-
 FLOW_TO_M3HR = {
-    # imperial/US volumetric (actual, not standard-condition)
     'cfm': 1.699010796, 'acfm': 1.699010796, 'icfm': 1.699010796,
     'ft3/min': 1.699010796, 'ft3min': 1.699010796, 'ft/min': 1.699010796, 'cf/min': 1.699010796,
     'cfh': 0.028316847, 'ft3/hr': 0.028316847, 'ft3/h': 0.028316847, 'ft3hr': 0.028316847,
     'ft/hr': 0.028316847, 'cf/hr': 0.028316847,
     'cfs': 101.9406, 'ft3/s': 101.9406, 'ft3s': 101.9406, 'ft/s': 101.9406, 'cf/s': 101.9406,
-    # metric volumetric
     'm3/hr': 1.0, 'm3/h': 1.0, 'm3hr': 1.0, 'm3h': 1.0,
     'm3/min': 60.0, 'm3min': 60.0,
     'm3/s': 3600.0, 'm3s': 3600.0,
-    'l/min': 0.06, 'lpm': 0.06, 'l/min': 0.06,
+    'l/min': 0.06, 'lpm': 0.06,
     'l/s': 3.6, 'lps': 3.6, 'l/hr': 0.001, 'lph': 0.001,
-    # liquid-specific
     'gpm': 0.227124707, 'usgpm': 0.227124707, 'galmin': 0.227124707,
     'igpm': 0.272765, 'ukgpm': 0.272765, 'impgpm': 0.272765,
     'gph': 0.003785412, 'usgph': 0.003785412,
     'bbl/day': 0.006624459, 'bpd': 0.006624459, 'bbl/d': 0.006624459,
-    # NOTE: MMSCFD is a mass-flow-equivalent expressed at *standard* conditions, not
-    # directly interchangeable with actual volumetric flow. Converted here as a literal
-    # volume for completeness; verify against your process basis before trusting it.
     'mmscfd': 1179.874,
 }
 
@@ -69,7 +58,6 @@ HEAD_TO_M = {
     'in': 0.0254, 'inch': 0.0254, 'inches': 0.0254,
     'm': 1.0, 'meter': 1.0, 'metre': 1.0, 'meters': 1.0, 'metres': 1.0,
     'mm': 0.001,
-    # specific work (energy/mass) forms, converted via head = energy / g
     'kj/kg': 101.9716, 'j/kg': 0.1019716,
     'btu/lb': 237.2075,
 }
@@ -89,29 +77,54 @@ EFF_TO_PCT = {
     'fraction': 100.0, 'decimal': 100.0, 'ratio': 100.0, 'frac': 100.0,
 }
 
+# New Target UOM Conversion Dictionaries for Operating Conditions
+DIAMETER_TO_M = {
+    'in': 0.0254, 'inch': 0.0254, 'inches': 0.0254,
+    'mm': 0.001, 'milimeter': 0.001, 'milimeters': 0.001,
+    'cm': 0.01, 'centimeter': 0.01,
+    'm': 1.0, 'meter': 1.0, 'meters': 1.0
+}
 
-def psi_to_pa(psi):
-    return psi * 6894.757293168361
+PRESSURE_TO_KG_CM2A = {
+    'psi': 0.070306958, 'psia': 0.070306958,
+    'bar': 1.01971621, 'bara': 1.01971621,
+    'kpa': 0.010197162, 'kpaa': 0.010197162,
+    'mpa': 10.1971621, 'mpaa': 10.1971621,
+    'kg/cm2': 1.0, 'kg/cm2a': 1.0, 'kgf/cm2': 1.0, 'kgf/cm2a': 1.0,
+    'atm': 1.033227, 'pa': 0.00001019716
+}
 
-
-def f_to_k(deg_f):
-    return (deg_f - 32) * 5.0 / 9.0 + 273.15
-
-
-def gas_density_kg_m3(pressure_psi, temperature_f, mw, z):
-    """Inlet gas density via real-gas law: rho = P*MW / (Z*R*T)."""
-    p_pa = psi_to_pa(pressure_psi)
-    t_k = f_to_k(temperature_f)
-    return (p_pa * mw) / (z * R_UNIVERSAL * t_k)
-
+def convert_temperature_to_c(val, unit_str):
+    """Handles temperature offset scales directly instead of single scalar multipliers."""
+    u = normalize_unit(unit_str)
+    if u in ['f', 'degf', 'fahrenheit']:
+        return (val - 32) * 5.0 / 9.0, True
+    if u in ['k', 'kelvin']:
+        return val - 273.15, True
+    if u in ['r', 'rankine']:
+        return (val - 491.67) * 5.0 / 9.0, True
+    if u in ['c', 'degc', 'celsius', 'centigrade']:
+        return val, True
+    return val, False
 
 def convert_unit(value, unit_str, table, label):
-    """Look up a conversion factor; pass through unchanged (with a note) if unknown."""
     key = normalize_unit(unit_str)
     if key in table:
         return value * table[key], True
     return value, False
 
+# Helper conversions for internal mass density calculator
+def kg_cm2a_to_pa(kg_cm2a):
+    return kg_cm2a * 98066.5
+
+def c_to_k(deg_c):
+    return deg_c + 273.15
+
+def gas_density_kg_m3(pressure_kg_cm2a, temperature_c, mw, z):
+    """Inlet gas density using metric units: rho = P*MW / (Z*R*T)."""
+    p_pa = kg_cm2a_to_pa(pressure_kg_cm2a)
+    t_k = c_to_k(temperature_c)
+    return (p_pa * mw) / (z * R_UNIVERSAL * t_k)
 
 def clean_parameter_name(name):
     n = str(name).lower()
@@ -120,10 +133,7 @@ def clean_parameter_name(name):
     if 'power' in n or 'bhp' in n or 'kw' in n: return 'Power'
     return str(name)
 
-
 def detect_triplet_blocks(raw_df):
-    """Find Speed/Flow/Value header triplets and capture the units row
-    directly beneath the header (row+1), e.g. 'rpm | cfm | ft'."""
     blocks = []
     rows, cols = raw_df.shape
     for r in range(rows):
@@ -153,10 +163,7 @@ def detect_triplet_blocks(raw_df):
             uniq.append(b)
     return uniq
 
-
 def extract_block_data(raw_df, block):
-    """Extract Speed/Flow/Value rows and convert Flow/Value into
-    standard units (m3/hr, m, kW, %) based on the block's units row."""
     r = block['header_row']
     c = block['start_col']
     data = []
@@ -185,7 +192,6 @@ def extract_block_data(raw_df, block):
 
     return df, flow_converted, value_converted
 
-
 def detect_property_block(raw_df):
     rows, cols = raw_df.shape
     for r in range(rows):
@@ -196,7 +202,6 @@ def detect_property_block(raw_df):
             if v1 == 'parameter' and v2 == 'value' and v3 == 'units':
                 return {'header_row': r, 'start_col': c}
     return None
-
 
 def extract_property_block(raw_df, block):
     if block is None:
@@ -210,13 +215,43 @@ def extract_property_block(raw_df, block):
         units = raw_df.iloc[row, c + 2]
         if pd.isna(param) or str(param).strip() == '':
             break
+        
+        p_name = str(param).strip()
+        v_val = value.item() if hasattr(value, 'item') else value
+        u_str = '' if pd.isna(units) else str(units).strip()
+        
+        # intercept and update based on engineering parameters
+        if 'diameter' in p_name.lower():
+            try:
+                converted_val, success = convert_unit(float(v_val), u_str, DIAMETER_TO_M, 'diameter')
+                if success:
+                    v_val = converted_val
+                    u_str = 'm'
+            except (ValueError, TypeError):
+                pass
+        elif 'pressure' in p_name.lower():
+            try:
+                converted_val, success = convert_unit(float(v_val), u_str, PRESSURE_TO_KG_CM2A, 'pressure')
+                if success:
+                    v_val = converted_val
+                    u_str = 'kg/cm2a'
+            except (ValueError, TypeError):
+                pass
+        elif 'temperature' in p_name.lower():
+            try:
+                converted_val, success = convert_temperature_to_c(float(v_val), u_str)
+                if success:
+                    v_val = converted_val
+                    u_str = 'deg C'
+            except (ValueError, TypeError):
+                pass
+
         rows_out.append({
-            'Parameter': str(param).strip(),
-            'Value': value.item() if hasattr(value, 'item') else value,
-            'Units': '' if pd.isna(units) else str(units).strip()
+            'Parameter': p_name,
+            'Value': v_val,
+            'Units': u_str
         })
     return pd.DataFrame(rows_out, columns=['Parameter', 'Value', 'Units'])
-
 
 def build_model(x, y, meth):
     if meth == 'Spline':
@@ -233,12 +268,10 @@ def build_model(x, y, meth):
     r2 = r2_score(y, lr.predict(X))
     return {'type': 'poly', 'poly': poly, 'model': lr, 'xmin': x.min(), 'xmax': x.max(), 'r2': r2}
 
-
 def predict_model(obj, flow):
     if obj['type'] == 'spline':
         return obj['model'](flow)
     return obj['model'].predict(obj['poly'].transform(flow.reshape(-1, 1)))
-
 
 def auto_best(x, y):
     best = None; best_name = None; best_r2 = -1e9
@@ -251,25 +284,30 @@ def auto_best(x, y):
             pass
     return best_name, best
 
-
 def gas_properties_from_df(prop_df):
-    """Pull Pressure (psi), Temperature (F), Molecular Weight, Compressibility
-    out of the operating-conditions table. Returns None if any are missing/non-numeric."""
-    lookup = {row['Parameter']: row['Value'] for _, row in prop_df.iterrows()}
+    """Pulls properties assuming they have been parsed into standard units."""
+    lookup = {}
+    for _, row in prop_df.iterrows():
+        name = str(row['Parameter']).lower()
+        if 'pressure' in name:
+            lookup['pressure'] = row['Value']
+        elif 'temperature' in name:
+            lookup['temperature'] = row['Value']
+        elif 'molecular weight' in name or 'mw' in name:
+            lookup['mw'] = row['Value']
+        elif 'compressibility' in name or 'z' in name:
+            lookup['z'] = row['Value']
     try:
         return {
-            'pressure_psi': float(lookup['Pressure']),
-            'temperature_f': float(lookup['Temperature']),
-            'mw': float(lookup['Molecular Weight']),
-            'z': float(lookup['Compressibility']),
+            'pressure_kg_cm2a': float(lookup['pressure']),
+            'temperature_c': float(lookup['temperature']),
+            'mw': float(lookup['mw']),
+            'z': float(lookup['z']),
         }
     except (KeyError, TypeError, ValueError):
         return None
 
-
 def compute_missing_parameter(available, mass_flow_kg_s):
-    """available: dict with up to 2 of {'Head':m, 'Efficiency':pct, 'Power':kW} as arrays.
-    Returns (name, values) for whichever of the three is missing, or (None, None)."""
     have = set(available.keys())
     needed = {'Head', 'Efficiency', 'Power'} - have
     if len(needed) != 1:
@@ -422,7 +460,7 @@ if file:
                         temp[f'{p} ({unit_label})'] = vals
 
                 if gas_props is not None:
-                    rho = gas_density_kg_m3(gas_props['pressure_psi'], gas_props['temperature_f'],
+                    rho = gas_density_kg_m3(gas_props['pressure_kg_cm2a'], gas_props['temperature_c'],
                                              gas_props['mw'], gas_props['z'])
                     mass_flow_kg_s = common_flow * rho / 3600.0
                     name, values = compute_missing_parameter(predicted, mass_flow_kg_s)
