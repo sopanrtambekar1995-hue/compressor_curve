@@ -96,14 +96,18 @@ PRESSURE_TO_KG_CM2A = {
 
 def convert_temperature_to_c(val, unit_str):
     """Handles temperature offset scales directly instead of single scalar multipliers."""
-    u = normalize_unit(unit_str)
-    if u in ['f', 'degf', 'fahrenheit']:
+    # Strip out the degree symbol along with other formatting variants
+    u = str(unit_str).strip().lower()
+    u = u.replace('°', '').replace('degree', '').replace('deg', '')
+    u = u.replace(' ', '').replace('.', '').replace('-', '').replace('_', '')
+    
+    if u in ['f', 'fahrenheit']:
         return (val - 32) * 5.0 / 9.0, True
     if u in ['k', 'kelvin']:
         return val - 273.15, True
     if u in ['r', 'rankine']:
         return (val - 491.67) * 5.0 / 9.0, True
-    if u in ['c', 'degc', 'celsius', 'centigrade']:
+    if u in ['c', 'celsius', 'centigrade']:
         return val, True
     return val, False
 
