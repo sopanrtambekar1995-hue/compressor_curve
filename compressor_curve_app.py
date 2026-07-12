@@ -9,6 +9,7 @@ from sklearn.metrics import r2_score
 from scipy.interpolate import CubicSpline
 from datetime import datetime
 import os
+import re
 
 st.set_page_config(page_title='Compressor Curve Regression', layout='wide')
 st.title('Compressor Curve Regression Tool')
@@ -23,6 +24,7 @@ file = st.file_uploader('Upload Workbook', type=['xlsx'])
 # ---------------------------------------------------------------------------
 R_UNIVERSAL = 8314.462618   # J/(kmol.K)
 G = 9.80665                 # m/s^2
+P_ATM_KG_CM2 = 1.033227     # Standard Atmospheric Pressure in kg/cm2
 
 def normalize_unit(u):
     """Fold formatting variants ('m³/hr', 'M3/HR', 'ft^3 / min', 'Ft3.Min') onto one key."""
@@ -77,7 +79,6 @@ EFF_TO_PCT = {
     'fraction': 100.0, 'decimal': 100.0, 'ratio': 100.0, 'frac': 100.0,
 }
 
-# New Target UOM Conversion Dictionaries for Operating Conditions
 DIAMETER_TO_M = {
     'in': 0.0254, 'inch': 0.0254, 'inches': 0.0254,
     'mm': 0.001, 'milimeter': 0.001, 'milimeters': 0.001,
@@ -85,18 +86,8 @@ DIAMETER_TO_M = {
     'm': 1.0, 'meter': 1.0, 'meters': 1.0
 }
 
-PRESSURE_TO_KG_CM2A = {
-    'psi': 0.070306958, 'psia': 0.070306958,
-    'bar': 1.01971621, 'bara': 1.01971621,
-    'kpa': 0.010197162, 'kpaa': 0.010197162,
-    'mpa': 10.1971621, 'mpaa': 10.1971621,
-    'kg/cm2': 1.0, 'kg/cm2a': 1.0, 'kgf/cm2': 1.0, 'kgf/cm2a': 1.0,
-    'atm': 1.033227, 'pa': 0.00001019716
-}
-
 def convert_temperature_to_c(val, unit_str):
     """Handles temperature offset scales directly instead of single scalar multipliers."""
-    # Strip out the degree symbol along with other formatting variants
     u = str(unit_str).strip().lower()
     u = u.replace('°', '').replace('degree', '').replace('deg', '')
     u = u.replace(' ', '').replace('.', '').replace('-', '').replace('_', '')
@@ -111,13 +102,40 @@ def convert_temperature_to_c(val, unit_str):
         return val, True
     return val, False
 
+def convert_pressure_to_kg_cm2a(val, unit_str):
+    """Handles scalar conversion for pressure and scales up gauge options to kg/cm2 absolute."""
+    u = normalize_unit(unit_str)
+    
+    # Base multiplier chart referenced to kg/cm2
+    multipliers = {
+        'psi': 0.070306958, 'psia': 0.070306958, 'psig': 0.070306958,
+        'bar': 1.01971621, 'bara': 1.01971621, 'barg': 1.01971621,
+        'kpa': 0.010197162, 'kpaa': 0.010197162, 'kpag': 0.010197162,
+        'mpa': 10.1971621, 'mpaa': 10.1971621, 'mpag': 10.1971621,
+        'kg/cm2': 1.0, 'kg/cm2a': 1.0, 'kg/cm2g': 1.0, 
+        'kgf/cm2': 1.0, 'kgf/cm2a': 1.0, 'kgf/cm2g': 1.0,
+        'atm': 1.033227, 'atmg': 1.033227, 'pa': 0.00001019716, 'pag': 0.00001019716
+    }
+    
+    if u not in multipliers:
+        return val, False
+        
+    kg_cm2_val = val * multipliers[u]
+    
+    # Add ambient baseline if explicitly declared as a gauge unit format
+    if u.endswith('g') or u in ['psi', 'bar', 'kpa', 'mpa', 'kg/cm2', 'kgf/cm2']:
+        # If explicitly absolute via 'a', do not add atmospheric offset
+        if not u.endswith('a'):
+            return kg_cm2_val + P_ATM_KG_CM2, True
+            
+    return kg_cm2_val, True
+
 def convert_unit(value, unit_str, table, label):
     key = normalize_unit(unit_str)
     if key in table:
         return value * table[key], True
     return value, False
 
-# Helper conversions for internal mass density calculator
 def kg_cm2a_to_pa(kg_cm2a):
     return kg_cm2a * 98066.5
 
@@ -161,10 +179,7 @@ def detect_triplet_blocks(raw_df):
     uniq = []
     seen = set()
     for b in blocks:
-        k = b['start_col']  # dedupe by column only: a duplicate header row at the
-                             # same column is a stray repeat, never a genuine 2nd block
-                             # (source files sometimes mislabel the repeated header text,
-                             # which used to slip past a (parameter, start_col) key)
+        k = b['start_col']
         if k not in seen:
             seen.add(k)
             uniq.append(b)
@@ -227,9 +242,12 @@ def extract_property_block(raw_df, block):
         v_val = value.item() if hasattr(value, 'item') else value
         u_str = '' if pd.isna(units) else str(units).strip()
         
-        # intercept and update based on engineering parameters
+        # Intercept and update based on engineering parameters
         if 'diameter' in p_name.lower():
             try:
+                if isinstance(v_val, str):
+                    v_val = re.split(r'[,/]', v_val)[0].strip()
+                
                 converted_val, success = convert_unit(float(v_val), u_str, DIAMETER_TO_M, 'diameter')
                 if success:
                     v_val = converted_val
@@ -238,7 +256,10 @@ def extract_property_block(raw_df, block):
                 pass
         elif 'pressure' in p_name.lower():
             try:
-                converted_val, success = convert_unit(float(v_val), u_str, PRESSURE_TO_KG_CM2A, 'pressure')
+                if isinstance(v_val, str):
+                    v_val = re.split(r'[,/]', v_val)[0].strip()
+                
+                converted_val, success = convert_pressure_to_kg_cm2a(float(v_val), u_str)
                 if success:
                     v_val = converted_val
                     u_str = 'kg/cm2a'
@@ -246,6 +267,9 @@ def extract_property_block(raw_df, block):
                 pass
         elif 'temperature' in p_name.lower():
             try:
+                if isinstance(v_val, str):
+                    v_val = re.split(r'[,/]', v_val)[0].strip()
+                
                 converted_val, success = convert_temperature_to_c(float(v_val), u_str)
                 if success:
                     v_val = converted_val
@@ -292,7 +316,6 @@ def auto_best(x, y):
     return best_name, best
 
 def gas_properties_from_df(prop_df):
-    """Pulls properties assuming they have been parsed into standard units."""
     lookup = {}
     for _, row in prop_df.iterrows():
         name = str(row['Parameter']).lower()
@@ -348,10 +371,6 @@ if file:
 
     try:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Guarantee the workbook is never left with zero sheets: write a
-            # placeholder immediately, before anything that could raise. It gets
-            # replaced in spirit by the real sheets below, but if every stage
-            # errors out, this is what keeps the writer from crashing on save.
             pd.DataFrame([{'status': 'processing started'}]).to_excel(
                 writer, sheet_name='_status', index=False)
 
@@ -382,9 +401,6 @@ if file:
                                           'Calculated Parameter': '', 'Status': 'no blocks found'})
                         continue
 
-                    # Sanity check: a real units row should not itself be numeric.
-                    # If it is, this block's "header" is actually a data row —
-                    # skip it and flag it rather than silently ingesting garbage.
                     clean_blocks = []
                     for b in blocks:
                         looks_numeric = False
@@ -472,7 +488,6 @@ if file:
 
                             st.plotly_chart(fig, use_container_width=True)
 
-                    # COMMON FLOW EXPORT PER SPEED (+ missing-parameter calculation)
                     speeds = set()
                     for p in stage_models:
                         speeds.update(stage_models[p].keys())
@@ -539,8 +554,6 @@ if file:
                     })
 
                 except Exception as e:
-                    # A single bad sheet must not take down the whole export.
-                    # Log it, note it in the overview, and move on to the next stage.
                     st.error(f"Error processing '{stage}': {e}")
                     overview.append({'Stage': stage, 'Parameters': '', 'Blocks Found': 0,
                                       'Calculated Parameter': '', 'Status': f'error: {e}'})
@@ -559,9 +572,7 @@ if file:
 
     if fatal_error is not None:
         st.error(f"Could not build the output workbook: {fatal_error}")
-        st.info("Nothing to download — see the error above. If this keeps happening, "
-                 "check that your deployed environment's package versions match requirements.txt "
-                 "(a Python/openpyxl/pandas version mismatch can produce confusing errors like this).")
+        st.info("Nothing to download — see the error above.")
     else:
         output.seek(0)
 
