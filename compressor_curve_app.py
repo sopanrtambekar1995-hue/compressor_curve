@@ -331,7 +331,7 @@ def gas_properties_from_df(prop_df):
             'temperature_c': float(lookup['temperature']),
             'mw': float(lookup['mw']),
             'z': float(lookup['z']),
-            'k': float(lookup.get('k', 1.4)), # Default to air if not found
+            'k': float(lookup.get('k', 1.4)), 
             'diameter_m': float(lookup.get('diameter', 1.0))
         }
     except (KeyError, TypeError, ValueError):
@@ -371,9 +371,7 @@ if file:
 
     try:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            pd.DataFrame([{'status': 'processing started'}]).to_excel(
-                writer, sheet_name='_status', index=False)
-
+            # First sheet tracking flags will be generated below directly to skip placeholder sheet
             for stage in xls.sheet_names:
                 st.header(stage)
                 try:
@@ -392,16 +390,14 @@ if file:
                         gas_props = gas_properties_from_df(prop_df)
                         
                         if gas_props is not None:
-                            # Derived Gas & Nondimensionalization Parameters Calculation
                             t_k = c_to_k(gas_props['temperature_c'])
                             p_pa = kg_cm2a_to_pa(gas_props['pressure_kg_cm2a'])
                             
-                            # 1. Acoustic Velocity (m/s)
+                            # 1. Intermediate Properties
                             acoustic_vel = np.sqrt((gas_props['k'] * gas_props['z'] * R_UNIVERSAL * t_k) / gas_props['mw'])
-                            # 2. Specific Volume (m3/kg)
                             spec_vol = (gas_props['z'] * R_UNIVERSAL * t_k) / (p_pa * gas_props['mw'])
                             
-                            # 3. Nondimensionalization Factors
+                            # 2. Updated Nondimensionalization Display Values
                             speed_factor = gas_props['diameter_m'] / (60.0 * acoustic_vel)
                             flow_factor = 1.0 / (acoustic_vel * (gas_props['diameter_m'] ** 2))
                             head_factor = 1000.0 / (acoustic_vel ** 2)
@@ -410,10 +406,10 @@ if file:
                             derived_df = pd.DataFrame([
                                 {'Parameter': 'Acoustic Velocity', 'Value': round(acoustic_vel, 2), 'Units': 'm/s'},
                                 {'Parameter': 'Specific Volume', 'Value': round(spec_vol, 5), 'Units': 'm3/kg'},
-                                {'Parameter': 'Speed Factor', 'Value': f"{speed_factor:.5e}", 'Units': 'min/m'},
-                                {'Parameter': 'Flow Factor', 'Value': f"{flow_factor:.5e}", 'Units': 's/m3'},
-                                {'Parameter': 'Head Factor', 'Value': f"{head_factor:.5e}", 'Units': 's2/m2'},
-                                {'Parameter': 'Power Factor', 'Value': f"{power_factor:.5e}", 'Units': 's3*m/kg*m2'}
+                                {'Parameter': 'Rotational Speed', 'Value': f"{speed_factor:.5e}", 'Units': 'rpm'},
+                                {'Parameter': 'Volumetric Flow', 'Value': f"{flow_factor:.5e}", 'Units': 'm3/s'},
+                                {'Parameter': 'Polytropic Head', 'Value': f"{head_factor:.5e}", 'Units': 'kJ/kg'},
+                                {'Parameter': 'Power', 'Value': f"{power_factor:.5e}", 'Units': 'kW'}
                             ])
                             st.dataframe(derived_df, use_container_width=True)
                             
@@ -540,7 +536,6 @@ if file:
                         common_min = max(m['xmin'] for m in available)
                         common_max = min(m['xmax'] for m in available)
 
-                        # ERROR INTERACTION CHECK: Flag if flow ranges do not overlap
                         if common_max <= common_min:
                             err_msg = f"Flow values do not overlap for Stage: **{stage}** at Speed: **{speed}** across parameters ({', '.join(available_params)})."
                             st.error(err_msg)
@@ -571,8 +566,6 @@ if file:
                                     temp[f'{name} ({unit_label}, calculated)'] = values
                                     predicted[name] = values
                                 
-                                # Pressure Ratio Calculations
-                                # Convert Head from meters to kJ/kg: head_kJ_kg = (Head in meters * G) / 1000
                                 head_meters = predicted['Head']
                                 head_kj_kg = (head_meters * G) / 1000.0
                                 eff_pct = predicted['Efficiency']
