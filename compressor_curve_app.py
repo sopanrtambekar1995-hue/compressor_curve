@@ -106,7 +106,6 @@ def convert_pressure_to_kg_cm2a(val, unit_str):
     """Handles scalar conversion for pressure and scales up gauge options to kg/cm2 absolute."""
     u = normalize_unit(unit_str)
     
-    # Base multiplier chart referenced to kg/cm2
     multipliers = {
         'psi': 0.070306958, 'psia': 0.070306958, 'psig': 0.070306958,
         'bar': 1.01971621, 'bara': 1.01971621, 'barg': 1.01971621,
@@ -122,9 +121,7 @@ def convert_pressure_to_kg_cm2a(val, unit_str):
         
     kg_cm2_val = val * multipliers[u]
     
-    # Add ambient baseline if explicitly declared as a gauge unit format
     if u.endswith('g') or u in ['psi', 'bar', 'kpa', 'mpa', 'kg/cm2', 'kgf/cm2']:
-        # If explicitly absolute via 'a', do not add atmospheric offset
         if not u.endswith('a'):
             return kg_cm2_val + P_ATM_KG_CM2, True
             
@@ -242,7 +239,6 @@ def extract_property_block(raw_df, block):
         v_val = value.item() if hasattr(value, 'item') else value
         u_str = '' if pd.isna(units) else str(units).strip()
         
-        # Intercept and update based on engineering parameters
         if 'diameter' in p_name.lower():
             try:
                 if isinstance(v_val, str):
@@ -494,12 +490,15 @@ if file:
 
                     export_rows = []
                     computed_param_name = None
+                    stage_status = 'ok'
 
                     for speed in sorted(speeds):
                         available = []
+                        available_params = []
                         for p in stage_models:
                             if speed in stage_models[p]:
                                 available.append(stage_models[p][speed])
+                                available_params.append(p)
 
                         if len(available) < 1:
                             continue
@@ -507,7 +506,11 @@ if file:
                         common_min = max(m['xmin'] for m in available)
                         common_max = min(m['xmax'] for m in available)
 
+                        # ERROR INTERACTION CHECK: Flag if flow ranges do not overlap
                         if common_max <= common_min:
+                            err_msg = f"Flow values do not overlap for Stage: **{stage}** at Speed: **{speed}** across parameters ({', '.join(available_params)})."
+                            st.error(err_msg)
+                            stage_status = f"error: flow overlap failed at speed {speed}"
                             continue
 
                         common_flow = np.linspace(common_min, common_max, points)
@@ -537,7 +540,7 @@ if file:
 
                         export_rows.append(pd.DataFrame(temp))
 
-                    if computed_param_name:
+                    if computed_param_name and stage_status == 'ok':
                         st.success(f"Calculated missing parameter **{computed_param_name}** for {stage} "
                                    f"using gas density from Operating Conditions.")
 
@@ -550,7 +553,7 @@ if file:
                         'Parameters': ','.join(stage_parameters),
                         'Blocks Found': len(blocks),
                         'Calculated Parameter': computed_param_name or '',
-                        'Status': 'ok'
+                        'Status': stage_status
                     })
 
                 except Exception as e:
