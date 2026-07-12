@@ -403,7 +403,7 @@ if file:
                             speed_factor = (2 * np.pi * gas_props['diameter_m']) / (60.0 * acoustic_vel)
                             flow_factor = 1.0 / (acoustic_vel *gas_props['diameter_m']**2)
                             head_factor = 1000.0 / (acoustic_vel**2)
-                            power_factor = (10000.0 * 30 * rho) / (np.pi *acoustic_vel**2 *gas_props['diameter_m']**3)
+                            power_factor = (1000.0 * 30 * rho) / (np.pi *acoustic_vel**2 *gas_props['diameter_m']**3)
                             
                             derived_df = pd.DataFrame([
                                 {'Parameter': 'Acoustic Velocity', 'Value': round(acoustic_vel, 2), 'Units': 'm/s'},
