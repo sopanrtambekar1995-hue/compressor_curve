@@ -397,12 +397,13 @@ if file:
                             # 1. Intermediate Properties
                             acoustic_vel = np.sqrt((gas_props['k'] * gas_props['z'] * R_UNIVERSAL * t_k) / gas_props['mw'])
                             spec_vol = (gas_props['z'] * R_UNIVERSAL * t_k) / (p_pa * gas_props['mw'])
+                            rho = 1.0 / spec_vol
                             
                             # 2. Updated Nondimensionalization Display Values
                             speed_factor = (2 * np.pi * gas_props['diameter_m']) / (60.0 * acoustic_vel)
-                            flow_factor = 1.0 / (acoustic_vel * (gas_props['diameter_m'] ** 2))
-                            head_factor = 1000.0 / (acoustic_vel ** 2)
-                            power_factor = (1000.0 * spec_vol) / ((acoustic_vel ** 3) * (gas_props['diameter_m'] ** 2))
+                            flow_factor = 1.0 / (acoustic_vel *gas_props['diameter_m']**2)
+                            head_factor = 1000.0 / (acoustic_vel**2)
+                            power_factor = (30000.0 * rho) / (np.pi *acoustic_vel**2 *gas_props['diameter_m']**3)
                             
                             derived_df = pd.DataFrame([
                                 {'Parameter': 'Acoustic Velocity', 'Value': round(acoustic_vel, 2), 'Units': 'm/s'},
