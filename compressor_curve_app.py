@@ -103,28 +103,29 @@ def convert_temperature_to_c(val, unit_str):
     return val, False
 
 def convert_pressure_to_kg_cm2a(val, unit_str):
-    """Handles scalar conversion for pressure and scales up gauge options to kg/cm2 absolute."""
     u = normalize_unit(unit_str)
-    
+
     multipliers = {
         'psi': 0.070306958, 'psia': 0.070306958, 'psig': 0.070306958,
         'bar': 1.01971621, 'bara': 1.01971621, 'barg': 1.01971621,
         'kpa': 0.010197162, 'kpaa': 0.010197162, 'kpag': 0.010197162,
         'mpa': 10.1971621, 'mpaa': 10.1971621, 'mpag': 10.1971621,
-        'kg/cm2': 1.0, 'kg/cm2a': 1.0, 'kg/cm2g': 1.0, 
+        'kg/cm2': 1.0, 'kg/cm2a': 1.0, 'kg/cm2g': 1.0,
         'kgf/cm2': 1.0, 'kgf/cm2a': 1.0, 'kgf/cm2g': 1.0,
-        'atm': 1.033227, 'atmg': 1.033227, 'pa': 0.00001019716, 'pag': 0.00001019716
+        'atm': 1.033227, 'atmg': 1.033227,
+        'pa': 0.00001019716, 'pag': 0.00001019716
     }
-    
+
     if u not in multipliers:
         return val, False
-        
+
     kg_cm2_val = val * multipliers[u]
-    
-    if u.endswith('g') or u in ['psi', 'bar', 'kpa', 'mpa', 'kg/cm2', 'kgf/cm2']:
-        if not u.endswith('a'):
-            return kg_cm2_val + P_ATM_KG_CM2, True
-            
+
+    # Absolute is now the default. Atmospheric offset is added ONLY
+    # when the unit explicitly says gauge (e.g. 'psig', 'barg').
+    if u.endswith('g'):
+        return kg_cm2_val + P_ATM_KG_CM2, True
+
     return kg_cm2_val, True
 
 def convert_unit(value, unit_str, table, label):
@@ -398,10 +399,10 @@ if file:
                             spec_vol = (gas_props['z'] * R_UNIVERSAL * t_k) / (p_pa * gas_props['mw'])
                             
                             # 2. Updated Nondimensionalization Display Values
-                            speed_factor = gas_props['diameter_m'] / (60.0 * acoustic_vel)
+                            speed_factor = (2 * np.pi * gas_props['diameter_m']) / (60.0 * acoustic_vel)
                             flow_factor = 1.0 / (acoustic_vel * (gas_props['diameter_m'] ** 2))
                             head_factor = 1000.0 / (acoustic_vel ** 2)
-                            power_factor = spec_vol / (1000.0 * (acoustic_vel ** 3) * (gas_props['diameter_m'] ** 2))
+                            power_factor = (1000.0 * spec_vol) / ((acoustic_vel ** 3) * (gas_props['diameter_m'] ** 2))
                             
                             derived_df = pd.DataFrame([
                                 {'Parameter': 'Acoustic Velocity', 'Value': round(acoustic_vel, 2), 'Units': 'm/s'},
