@@ -56,10 +56,10 @@ FLOW_TO_M3HR = {
 
 HEAD_TO_M = {
     'ft': 0.3048, 'feet': 0.3048, 'foot': 0.3048,
-    'ftlbf/lbm': 0.3048, 'lbfft/lbm': 0.3048, 'ftlb/lb': 0.3048,
+    'ftlbf/lbm': 0.3048, 'lbfft/lbm': 0.3048, 'ftlb/lb': 0.3048,'lbft/lb': 0.3048,
     'in': 0.0254, 'inch': 0.0254, 'inches': 0.0254,
     'm': 1.0, 'meter': 1.0, 'metre': 1.0, 'meters': 1.0, 'metres': 1.0,
-    'mm': 0.001,
+    'mm': 0.001,'milimeter': 0.001, 'milimeters': 0.001,
     'kj/kg': 101.9716, 'j/kg': 0.1019716,
     'btu/lb': 237.2075,
 }
